@@ -1,0 +1,282 @@
+import pandas as pd
+import re
+import folium
+from folium.plugins import MarkerCluster
+from IPython.display import display
+import numpy as np
+
+# Функция для извлечения координат из строки Geodata
+def extract_coordinates(geodata_str):
+    """
+    Извлекает координаты из строки формата:
+    {type=Point, coordinates=[lon, lat]}
+    или type:Point\ncoordinates:[[[lon, lat], ...]]
+    """
+    if pd.isna(geodata_str) or geodata_str == '':
+        return None, None
+
+    geodata_str = str(geodata_str)
+
+    # Ищем координаты в формате {type=Point, coordinates=[lon, lat]}
+    match = re.search(r'coordinates=\[([\d\.-]+),\s*([\d\.-]+)\]', geodata_str)
+    if match:
+        lon = float(match.group(1))
+        lat = float(match.group(2))
+        return lon, lat
+
+    # Ищем координаты в формате coordinates=[[[lon, lat], ...]]
+    match = re.search(r'coordinates=\[\[\[([\d\.-]+),\s*([\d\.-]+)', geodata_str)
+    if match:
+        lon = float(match.group(1))
+        lat = float(match.group(2))
+        return lon, lat
+
+    # Ищем координаты в формате type:Point\ncoordinates:[[[lon, lat], ...]]
+    match = re.search(r'coordinates:\s*\[\[\[([\d\.-]+),\s*([\d\.-]+)', geodata_str)
+    if match:
+        lon = float(match.group(1))
+        lat = float(match.group(2))
+        return lon, lat
+
+    return None, None
+
+# Чтение данных из Excel файла
+def load_cultural_heritage_data(file_path):
+    """
+Загружает данные из Excel файла
+    """
+    try:
+        # Пробуем прочитать файл
+        df = pd.read_excel(file_path, engine='openpyxl')
+        print(f"✅ Файл успешно загружен. Найдено {len(df)} записей")
+
+        # Выводим названия столбцов для отладки
+        print("\n📋 Названия столбцов в файле:")
+        for i, col in enumerate(df.columns, 1):
+            print(f"   {i}. {col}")
+
+        return df
+    except FileNotFoundError:
+        print(f"❌ Файл {file_path} не найден!")
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка при чтении файла: {e}")
+        return None
+
+# Функция для поиска нужного столбца по шаблонам
+def find_column(df, patterns):
+    """
+    Ищет столбец по списку возможных названий
+    """
+    for col in df.columns:
+        col_lower = col.lower()
+        for pattern in patterns:
+            if pattern in col_lower:
+                return col
+    return None
+
+# Создание дашборда
+def create_dashboard(df):
+    """
+    Создает интерактивную карту с объектами культурного наследия
+    """
+    # Определяем названия столбцов
+    name_col = find_column(df, ['наименование объекта', 'name of the object'])
+    type_col = find_column(df, ['вид объекта', 'object type'])
+    category_col = find_column(df, ['категория', 'category'])
+    status_col = find_column(df, ['охранный статус', 'security status'])
+    district_col = find_column(df, ['район', 'district'])
+    address_col = find_column(df, ['местоположение', 'addresses', 'address'])
+    egrkn_col = find_column(df, ['номер егрокн', 'usrcho number'])
+    geodata_col = find_column(df, ['геоданные', 'geodata'])
+
+    print(f"\n🔍 Найдены столбцы:")
+    print(f"   - Название объекта: {name_col}")
+    print(f"   - Тип объекта: {type_col}")
+    print(f"   - Категория: {category_col}")
+    print(f"   - Охранный статус: {status_col}")
+    print(f"   - Район: {district_col}")
+    print(f"   - Адрес: {address_col}")
+    print(f"   - Номер ЕГРОКН: {egrkn_col}")
+    print(f"   - Геоданные: {geodata_col}")
+
+    # Извлекаем координаты
+    if geodata_col:
+        df['lon'], df['lat'] = zip(*df[geodata_col].apply(extract_coordinates))
+    else:
+        print("❌ Столбец с геоданными не найден!")
+        return None
+
+    # Удаляем строки без координат
+    df_clean = df.dropna(subset=['lon', 'lat']).copy()
+    print(f"\n📍 Объектов с координатами: {len(df_clean)} из {len(df)}")
+
+    if len(df_clean) == 0:
+        print("❌ Нет объектов с координатами для отображения на карте")
+        return None
+
+    # Создаем карту
+    moscow_center = [55.7558, 37.6173]
+    m = folium.Map(location=moscow_center, zoom_start=12, tiles='OpenStreetMap')
+
+    # Добавляем кластеризатор маркеров
+    marker_cluster = MarkerCluster().add_to(m)
+
+    # Добавляем маркеры
+    for idx, row in df_clean.iterrows():
+        # Получаем значения для попапа
+        name = row[name_col] if name_col and pd.notna(row[name_col]) else 'Нет данных'
+        obj_type = row[type_col] if type_col and pd.notna(row[type_col]) else 'Нет данных'
+        category = row[category_col] if category_col and pd.notna(row[category_col]) else 'Нет данных'
+        status = row[status_col] if status_col and pd.notna(row[status_col]) else 'Нет данных'
+        district = row[district_col] if district_col and pd.notna(row[district_col]) else 'Нет данных'
+        address = row[address_col] if address_col and pd.notna(row[address_col]) else 'Нет данных'
+        egrkn = row[egrkn_col] if egrkn_col and pd.notna(row[egrkn_col]) else 'Нет данных'
+
+        # Обрезаем длинные строки
+        if len(str(name)) > 100:
+            name = str(name)[:100] + '...'
+        if len(str(address)) > 150:
+            address = str(address)[:150] + '...'
+
+        # Формируем HTML для всплывающего окна
+        popup_html = f"""
+        <div style="font-size:12px; max-width:400px; font-family: Arial, sans-serif;">
+            <b style="font-size:14px;">{name}</b><br>
+            <hr style="margin:5px 0;">
+            <b>Тип объекта:</b> {obj_type}<br>
+            <b>Категория:</b> {category}<br>
+            <b>Статус:</b> {status}<br>
+            <b>Район:</b> {district}<br>
+            <b>Адрес:</b> {address}<br>
+            <b>Номер ЕГРОКН:</b> {egrkn}<br>
+        </div>
+        """
+        popup = folium.Popup(popup_html, max_width=400)
+
+        # Выбираем цвет маркера в зависимости от категории
+        category_str = str(category).lower()
+        if 'федерального' in category_str:
+            color = 'red'
+        elif 'регионального' in category_str:
+            color = 'blue'
+        elif 'местного' in category_str:
+            color = 'green'
+        else:
+            color = 'gray'
+
+        folium.Marker(
+            location=[row['lat'], row['lon']],
+            popup=popup,
+            icon=folium.Icon(color=color, icon='info-sign', prefix='fa'),
+            tooltip=name[:60]
+        ).add_to(marker_cluster)
+
+    # Добавляем легенду
+    legend_html = '''
+    <div style="position: fixed;
+                bottom: 50px; right: 50px;
+                background-color: white;
+                border: 2px solid grey;
+                border-radius: 5px;
+                padding: 10px;
+                font-family: Arial, sans-serif;
+                font-size: 12px;
+                z-index: 1000;
+                box-shadow: 0 0 10px rgba(0,0,0,0.2);">
+        <b>📌 Легенда</b><br>
+        <i class="fa fa-map-marker" style="color:red"></i> Федерального значения<br>
+        <i class="fa fa-map-marker" style="color:blue"></i> Регионального значения<br>
+        <i class="fa fa-map-marker" style="color:green"></i> Местного значения<br>
+        <i class="fa fa-map-marker" style="color:gray"></i> Не определена<br>
+        <hr style="margin:5px 0;">
+        <small>🔍 Кластеры показывают количество объектов</small>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+
+    return m, df_clean
+
+# Функция для вывода статистики
+def print_statistics(df_clean, category_col, district_col, status_col, type_col):
+    """
+    Выводит статистику по объектам
+    """
+    print("\n" + "="*60)
+    print("📊 СТАТИСТИКА ОБЪЕКТОВ КУЛЬТУРНОГО НАСЛЕДИЯ")
+    print("="*60)
+
+    print(f"\n📍 Всего объектов на карте: {len(df_clean)}")
+
+    if category_col:
+        print(f"\n📌 Распределение по категориям:")
+        fed_count = len(df_clean[df_clean[category_col].astype(str).str.contains('федерального', na=False)])
+        reg_count = len(df_clean[df_clean[category_col].astype(str).str.contains('регионального', na=False)])
+        other = len(df_clean) - fed_count - reg_count
+        print(f"   🟢 Федерального значения: {fed_count} ({fed_count/len(df_clean)*100:.1f}%)")
+        print(f"   🔵 Регионального значения: {reg_count} ({reg_count/len(df_clean)*100:.1f}%)")
+        print(f"   ⚪ Другие/не определены: {other} ({other/len(df_clean)*100:.1f}%)")
+
+    if type_col:
+        print(f"\n🏛️ Распределение по типам объектов (Топ-10):")
+        type_counts = df_clean[type_col].value_counts().head(10)
+        for obj_type, count in type_counts.items():
+            print(f"   • {obj_type}: {count}")
+
+    if district_col:
+        print(f"\n🗺️ Объекты по районам (Топ-15):")
+        district_counts = df_clean[district_col].value_counts().head(15)
+        for district, count in district_counts.items():
+            print(f"   • {district}: {count}")
+
+    if status_col:
+        print(f"\n🛡️ Распределение по охранному статусу:")
+        status_counts = df_clean[status_col].value_counts()
+        for status, count in status_counts.items():
+            print(f"   • {status}: {count}")
+
+# Основная функция
+def main():
+    """
+    Главная функция для запуска дашборда
+    """
+    # Путь к файлу Excel
+    file_path = 'data-530-31-03-2026.xlsx'
+
+    # Загружаем данные
+    df = load_cultural_heritage_data(file_path)
+
+    if df is None:
+        print("\n💡 Подсказка: Укажите правильный путь к файлу Excel")
+        return
+
+    # Создаем дашборд
+    dashboard, df_clean = create_dashboard(df)
+
+    if dashboard is None:
+        return
+
+    # Выводим статистику
+    # Определяем названия столбцов для статистики
+    category_col = find_column(df, ['категория', 'category'])
+    district_col = find_column(df, ['район', 'district'])
+    status_col = find_column(df, ['охранный статус', 'security status'])
+    type_col = find_column(df, ['вид объекта', 'object type'])
+
+    print_statistics(df_clean, category_col, district_col, status_col, type_col)
+
+    # Отображаем карту
+    print("\n" + "="*60)
+    print("🗺️ ЗАГРУЗКА КАРТЫ...")
+    print("="*60)
+    display(dashboard)
+
+    # Сохраняем карту в HTML файл
+    output_file = 'cultural_heritage_map.html'
+    dashboard.save(output_file)
+    print(f"\n✅ Карта сохранена в файл: {output_file}")
+    print("   Откройте этот файл в браузере для просмотра")
+
+# Запуск дашборда
+if __name__ == "__main__":
+    main()
